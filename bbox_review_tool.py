@@ -3,8 +3,10 @@
 """AI物体検出結果 レビュー・アノテーションツール（単一ファイル版）
 
 対象フォルダ配下の *.jpg / *.txt（AI検出結果）を再帰的に読み込み、
-信頼値0.3〜0.5の境界検出を中心に目視レビュー・追加アノテーションを行い、
+信頼値0.3〜0.5の境界検出のみを対象に目視レビューを行い、
 YOLO形式の教師データセット（train/val分割済み）を出力する。
+信頼値0.5以上の検出はそもそも読み込まない。BBoxの位置編集は行わない
+（操作はショートカットキーのみで完結する）。
 """
 
 from __future__ import annotations
@@ -32,7 +34,7 @@ from PySide6.QtWidgets import (
     QGraphicsRectItem, QGraphicsPixmapItem, QGraphicsItem, QVBoxLayout,
     QHBoxLayout, QFormLayout, QLabel, QPushButton, QFileDialog, QSplitter,
     QTableWidget, QTableWidgetItem, QComboBox, QLineEdit, QMessageBox,
-    QStatusBar, QAbstractItemView, QDialog, QDialogButtonBox, QHeaderView,
+    QStatusBar, QAbstractItemView, QHeaderView,
     QGroupBox, QSizePolicy, QTabWidget, QButtonGroup, QFrame,
 )
 
@@ -44,8 +46,7 @@ from PySide6.QtWidgets import (
 CLASS_NAMES = {0: "Person", 2: "Vehicle"}
 
 REVIEW_MIN = 0.3
-REVIEW_MAX = 0.5
-LOAD_MIN_CONF = 0.3  # これ未満の検出は読込対象外（仕様確定事項）
+REVIEW_MAX = 0.5  # この値以上の検出はそもそも読み込まない（仕様確定事項）
 
 STATUS_OK = "OK"
 STATUS_NG = "NG"
@@ -64,7 +65,7 @@ SUMMARY_JSON_FILENAME = "review_summary.json"
 
 FILTER_OPTIONS = ["全件", "Personのみ", "Vehicleのみ", "OKのみ", "NGのみ", "保留のみ", "未確認のみ"]
 
-HANDLE_SIZE = 10.0
+SELECTED_COLOR = QColor(0, 255, 255)
 
 DETECTION_LINE_RE = re.compile(
     r"^\s*([-+\d.eE]+)\s+(\d+)\s+\[\s*([-+\d.eE]+)\s*,\s*([-+\d.eE]+)\s*,"
@@ -116,9 +117,7 @@ class Detection:
     def color_category(self) -> str:
         if self.source == SOURCE_MANUAL:
             return "manual"
-        if self.confidence is not None and REVIEW_MIN <= self.confidence < REVIEW_MAX:
-            return "review"
-        return "trusted"
+        return "review"
 
     @property
     def class_name(self) -> str:
@@ -126,12 +125,9 @@ class Detection:
 
 
 def bbox_color(detection: Detection) -> QColor:
-    cat = detection.color_category
-    if cat == "manual":
+    if detection.color_category == "manual":
         return QColor(40, 200, 60)
-    if cat == "review":
-        return QColor(230, 200, 0)
-    return QColor(220, 40, 40)
+    return QColor(230, 200, 0)
 
 
 @dataclass
@@ -229,16 +225,13 @@ def scan_folder(root: Path, warnings: list):
                 elif d["class_id"] == 2:
                     stats.vehicle_count += 1
                 conf = d["confidence"]
-                if conf < LOAD_MIN_CONF:
+                if not (REVIEW_MIN <= conf < REVIEW_MAX):
                     continue
-                is_review_target = REVIEW_MIN <= conf < REVIEW_MAX
-                if is_review_target:
-                    stats.review_target_count += 1
-                    has_review_target = True
-                status = STATUS_UNCONFIRMED if is_review_target else STATUS_OK
+                stats.review_target_count += 1
+                has_review_target = True
                 detections.append(Detection(
                     bbox_id=bbox_id, class_id=d["class_id"], confidence=conf,
-                    bbox=d["bbox"], source=SOURCE_AI, status=status,
+                    bbox=d["bbox"], source=SOURCE_AI, status=STATUS_UNCONFIRMED,
                 ))
                 bbox_id += 1
         if has_review_target:
@@ -520,108 +513,53 @@ def save_summary(summary: dict, out_dir: Path):
 # ============================================================
 
 class BBoxItem(QGraphicsRectItem):
-    def __init__(self, rect: QRectF, color: QColor, movable: bool = True):
+    """レビュー専用の矩形表示アイテム（位置・サイズ編集は不可、選択のみ）。"""
+
+    def __init__(self, rect: QRectF, color: QColor):
         super().__init__(rect)
         self.detection: Optional[Detection] = None
         self.canvas = None
-        self._resize_dir = None
-        self._press_rect = None
-        self._press_pos = None
-        self.show_handles = False
-        self.setPen(QPen(color, 2))
-        self.setBrush(QBrush(Qt.NoBrush))
+        self._base_color = color
+        self.selected_highlight = False
         self.setFlag(QGraphicsItem.ItemIsSelectable, True)
-        self.setFlag(QGraphicsItem.ItemIsMovable, movable)
-        self.setAcceptHoverEvents(True)
-        self.setCursor(Qt.OpenHandCursor)
+        self.setFlag(QGraphicsItem.ItemIsMovable, False)
+        self.setCursor(Qt.PointingHandCursor)
+        self._apply_pen()
 
     def set_color(self, color: QColor):
-        self.setPen(QPen(color, 2))
+        self._base_color = color
+        self._apply_pen()
 
-    def _handle_at(self, pos):
-        r = self.rect()
-        h = HANDLE_SIZE
-        corners = {
-            "tl": QRectF(r.left() - h / 2, r.top() - h / 2, h, h),
-            "tr": QRectF(r.right() - h / 2, r.top() - h / 2, h, h),
-            "bl": QRectF(r.left() - h / 2, r.bottom() - h / 2, h, h),
-            "br": QRectF(r.right() - h / 2, r.bottom() - h / 2, h, h),
-        }
-        for name, cr in corners.items():
-            if cr.contains(pos):
-                return name
-        return None
+    def set_selected_highlight(self, flag: bool):
+        self.selected_highlight = flag
+        self._apply_pen()
+        self.setZValue(1 if flag else 0)
+
+    def _apply_pen(self):
+        if self.selected_highlight:
+            self.setPen(QPen(SELECTED_COLOR, 5))
+            self.setBrush(QBrush(QColor(0, 255, 255, 60)))
+        else:
+            self.setPen(QPen(self._base_color, 2))
+            self.setBrush(QBrush(Qt.NoBrush))
 
     def scene_rect(self) -> QRectF:
         p = self.pos()
         r = self.rect()
         return QRectF(p.x() + r.x(), p.y() + r.y(), r.width(), r.height())
 
-    def hoverMoveEvent(self, event):
-        handle = self._handle_at(event.pos())
-        if handle in ("tl", "br"):
-            self.setCursor(Qt.SizeFDiagCursor)
-        elif handle in ("tr", "bl"):
-            self.setCursor(Qt.SizeBDiagCursor)
-        else:
-            self.setCursor(Qt.OpenHandCursor)
-        super().hoverMoveEvent(event)
-
     def mousePressEvent(self, event):
-        self._resize_dir = self._handle_at(event.pos())
-        self._press_rect = QRectF(self.rect())
-        self._press_pos = event.pos()
-        if self._resize_dir:
-            self.setFlag(QGraphicsItem.ItemIsMovable, False)
         if self.canvas is not None:
             self.canvas.select_bbox_item(self)
         super().mousePressEvent(event)
 
-    def mouseMoveEvent(self, event):
-        if self._resize_dir:
-            delta = event.pos() - self._press_pos
-            r = QRectF(self._press_rect)
-            if "l" in self._resize_dir:
-                r.setLeft(r.left() + delta.x())
-            if "r" in self._resize_dir:
-                r.setRight(r.right() + delta.x())
-            if "t" in self._resize_dir:
-                r.setTop(r.top() + delta.y())
-            if "b" in self._resize_dir:
-                r.setBottom(r.bottom() + delta.y())
-            self.setRect(r.normalized())
-            return
-        super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event):
-        was_editing = self._resize_dir is not None or event.button() == Qt.LeftButton
-        self._resize_dir = None
-        self.setFlag(QGraphicsItem.ItemIsMovable, True)
-        super().mouseReleaseEvent(event)
-        if was_editing and self.canvas is not None:
-            self.canvas.notify_bbox_geometry_changed(self)
-
-    def paint(self, painter, option, widget=None):
-        super().paint(painter, option, widget)
-        if self.show_handles:
-            r = self.rect()
-            h = HANDLE_SIZE
-            painter.setBrush(QBrush(self.pen().color()))
-            painter.setPen(QPen(QColor(255, 255, 255), 1))
-            for cx, cy in ((r.left(), r.top()), (r.right(), r.top()),
-                           (r.left(), r.bottom()), (r.right(), r.bottom())):
-                painter.drawRect(QRectF(cx - h / 2, cy - h / 2, h, h))
-
 
 # ============================================================
-# GUI: 画像キャンバス（ズーム／パン／BBox編集）
+# GUI: 画像キャンバス（ズーム／パン／BBox選択・表示）
 # ============================================================
 
 class ImageCanvas(QGraphicsView):
     bboxSelected = Signal(object)
-    bboxGeometryChanged = Signal(object)
-    bboxDeleted = Signal(object)
-    newBboxRequested = Signal(QRectF)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -633,11 +571,7 @@ class ImageCanvas(QGraphicsView):
         self._pixmap_item: Optional[QGraphicsPixmapItem] = None
         self._bbox_items: list = []
         self.selected_item: Optional[BBoxItem] = None
-        self.add_mode = False
-        self._creating = False
         self._panning = False
-        self._new_rect_item: Optional[QGraphicsRectItem] = None
-        self._create_start = None
         self._pan_start = None
         self._image_size = (0, 0)
         self.setMouseTracking(True)
@@ -687,17 +621,12 @@ class ImageCanvas(QGraphicsView):
         self._bbox_items.append(item)
         return item
 
-    def add_detection(self, det: Detection):
-        self._add_bbox_item(det)
-
     def select_bbox_item(self, item: Optional[BBoxItem]):
         if self.selected_item is not None:
-            self.selected_item.show_handles = False
-            self.selected_item.update()
+            self.selected_item.set_selected_highlight(False)
         self.selected_item = item
         if item is not None:
-            item.show_handles = True
-            item.update()
+            item.set_selected_highlight(True)
         self.bboxSelected.emit(item.detection if item else None)
 
     def select_detection(self, detection: Optional[Detection]):
@@ -712,32 +641,16 @@ class ImageCanvas(QGraphicsView):
     def refresh_colors(self):
         for item in self._bbox_items:
             item.set_color(bbox_color(item.detection))
-            item.update()
 
-    def notify_bbox_geometry_changed(self, item: BBoxItem):
-        if item.detection is None:
-            return
-        r = item.scene_rect()
-        item.detection.bbox = [r.x(), r.y(), r.x() + r.width(), r.y() + r.height()]
-        self.bboxGeometryChanged.emit(item.detection)
+    # ---- マウス操作: ズーム／パン ----
+    def zoom_in(self):
+        self.setTransformationAnchor(QGraphicsView.AnchorViewCenter)
+        self.scale(1.15, 1.15)
 
-    def delete_selected(self):
-        item = self.selected_item
-        if item is None or item.detection is None:
-            return
-        det = item.detection
-        self._scene.removeItem(item)
-        if item in self._bbox_items:
-            self._bbox_items.remove(item)
-        self.selected_item = None
-        self.bboxDeleted.emit(det)
+    def zoom_out(self):
+        self.setTransformationAnchor(QGraphicsView.AnchorViewCenter)
+        self.scale(1 / 1.15, 1 / 1.15)
 
-    def set_add_mode(self, flag: bool):
-        self.add_mode = flag
-        for item in self._bbox_items:
-            item.setFlag(QGraphicsItem.ItemIsMovable, not flag)
-
-    # ---- マウス操作: ズーム／パン／新規BBox作成 ----
     def wheelEvent(self, event):
         factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
@@ -747,14 +660,7 @@ class ImageCanvas(QGraphicsView):
         if event.button() == Qt.LeftButton:
             item = self.itemAt(event.pos())
             on_background = item is None or item is self._pixmap_item
-            if self.add_mode and on_background:
-                self._creating = True
-                self._create_start = self.mapToScene(event.pos())
-                self._new_rect_item = QGraphicsRectItem(QRectF(self._create_start, self._create_start))
-                self._new_rect_item.setPen(QPen(QColor(40, 200, 60), 2, Qt.DashLine))
-                self._scene.addItem(self._new_rect_item)
-                return
-            if not self.add_mode and on_background:
+            if on_background:
                 self._panning = True
                 self._pan_start = event.pos()
                 self.setCursor(Qt.ClosedHandCursor)
@@ -763,10 +669,6 @@ class ImageCanvas(QGraphicsView):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
-        if self._creating and self._new_rect_item is not None:
-            cur = self.mapToScene(event.pos())
-            self._new_rect_item.setRect(QRectF(self._create_start, cur).normalized())
-            return
         if self._panning:
             delta = event.pos() - self._pan_start
             self._pan_start = event.pos()
@@ -776,42 +678,11 @@ class ImageCanvas(QGraphicsView):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
-        if self._creating:
-            self._creating = False
-            rect = self._new_rect_item.rect()
-            self._scene.removeItem(self._new_rect_item)
-            self._new_rect_item = None
-            if rect.width() > 3 and rect.height() > 3:
-                self.newBboxRequested.emit(rect)
-            return
         if self._panning:
             self._panning = False
             self.setCursor(Qt.ArrowCursor)
             return
         super().mouseReleaseEvent(event)
-
-
-# ============================================================
-# GUI: クラス選択ダイアログ
-# ============================================================
-
-class ClassSelectDialog(QDialog):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("クラス選択")
-        layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("追加するBBoxのクラスを選択してください"))
-        self.combo = QComboBox()
-        self.combo.addItem("Person (0)", 0)
-        self.combo.addItem("Vehicle (2)", 2)
-        layout.addWidget(self.combo)
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-
-    def selected_class(self) -> int:
-        return self.combo.currentData()
 
 
 # ============================================================
@@ -840,12 +711,19 @@ class ReviewPanel(QWidget):
         layout.addWidget(self.position_label)
 
         legend = QLabel(
-            '<span style="color:#dc2828;">■</span> AI高信頼度(0.5以上・自動OK) '
-            '&nbsp;&nbsp;<span style="color:#e6c800;">■</span> レビュー対象(0.3〜0.5) '
-            '&nbsp;&nbsp;<span style="color:#28c83c;">■</span> 追加アノテーション'
+            '<span style="color:#e6c800;">■</span> レビュー対象(0.3〜0.5) '
+            '&nbsp;&nbsp;<span style="color:#28c83c;">■</span> 追加アノテーション(過去データ) '
+            '&nbsp;&nbsp;<span style="color:#00ffff;">■</span> 選択中'
         )
         legend.setStyleSheet("color: #444;")
         layout.addWidget(legend)
+        shortcut_hint = QLabel(
+            "検出選択: W(前) / S(次)　画像切替: A(前) / D(次)　状態: 1=OK 2=NG 3=保留　"
+            "NG理由: Shift+1〜4"
+        )
+        shortcut_hint.setStyleSheet("color: #666; font-size: 11px;")
+        shortcut_hint.setWordWrap(True)
+        layout.addWidget(shortcut_hint)
 
         self.table = QTableWidget(0, 5)
         self.table.setHorizontalHeaderLabels(["ID", "信頼値", "クラス", "BBox座標", "状態"])
@@ -853,7 +731,7 @@ class ReviewPanel(QWidget):
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.table.setMaximumHeight(220)
+        self.table.setMaximumHeight(150)
         layout.addWidget(self.table)
 
         line = QFrame()
@@ -885,7 +763,7 @@ class ReviewPanel(QWidget):
         status_layout.addLayout(btn_row)
 
         reason_row = QHBoxLayout()
-        reason_row.addWidget(QLabel("NG理由:"))
+        reason_row.addWidget(QLabel("NG理由 (Shift+1〜4):"))
         self.reason_combo = QComboBox()
         self.reason_combo.addItems(NG_REASONS)
         self.reason_combo.setEnabled(False)
@@ -893,18 +771,6 @@ class ReviewPanel(QWidget):
         status_layout.addLayout(reason_row)
         status_box.setLayout(status_layout)
         review_layout.addWidget(status_box)
-
-        edit_box = QGroupBox("BBox編集")
-        edit_layout = QVBoxLayout()
-        self.add_mode_btn = QPushButton("新規アノテーション追加モード：OFF (N)")
-        self.add_mode_btn.setCheckable(True)
-        self.add_mode_btn.setStyleSheet(TOGGLE_ON_STYLE)
-        self.add_mode_btn.toggled.connect(self._on_add_mode_toggled)
-        edit_layout.addWidget(self.add_mode_btn)
-        self.delete_btn = QPushButton("選択BBoxを削除 (Delete)")
-        edit_layout.addWidget(self.delete_btn)
-        edit_box.setLayout(edit_layout)
-        review_layout.addWidget(edit_box)
 
         nav_box = QGroupBox("ナビゲーション")
         nav_layout = QVBoxLayout()
@@ -928,13 +794,13 @@ class ReviewPanel(QWidget):
         form = QFormLayout()
         self.filter_combo = QComboBox()
         self.filter_combo.addItems(FILTER_OPTIONS)
-        form.addRow("フィルタ:", self.filter_combo)
+        form.addRow("フィルタ ([ / ]):", self.filter_combo)
         self.search_edit = QLineEdit()
-        self.search_edit.setPlaceholderText("画像名検索 (Enter)")
+        self.search_edit.setPlaceholderText("画像名検索 (Ctrl+F, Enter)")
         form.addRow("検索:", self.search_edit)
         filter_layout.addLayout(form)
 
-        self.no_detection_btn = QPushButton("検出なし画像レビューモード：OFF")
+        self.no_detection_btn = QPushButton("検出なし画像レビューモード：OFF (M)")
         self.no_detection_btn.setCheckable(True)
         self.no_detection_btn.setStyleSheet(TOGGLE_ON_STYLE)
         self.no_detection_btn.toggled.connect(self._on_no_detection_toggled)
@@ -944,20 +810,18 @@ class ReviewPanel(QWidget):
 
         layout.addWidget(self.tabs)
 
-        self.export_btn = QPushButton("教師データ出力...")
+        self.export_btn = QPushButton("教師データ出力... (Ctrl+E)")
         self.export_btn.setStyleSheet(
             "QPushButton { font-weight: bold; padding: 6px; background-color: #34495e; color: white; }"
         )
         layout.addWidget(self.export_btn)
 
-        self.setMinimumWidth(380)
+        self.setMinimumWidth(300)
+        self.setMaximumWidth(340)
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
 
-    def _on_add_mode_toggled(self, checked: bool):
-        self.add_mode_btn.setText(f"新規アノテーション追加モード：{'ON' if checked else 'OFF'} (N)")
-
     def _on_no_detection_toggled(self, checked: bool):
-        self.no_detection_btn.setText(f"検出なし画像レビューモード：{'ON' if checked else 'OFF'}")
+        self.no_detection_btn.setText(f"検出なし画像レビューモード：{'ON' if checked else 'OFF'} (M)")
 
     def populate_table(self, detections: list):
         self.table.setRowCount(len(detections))
@@ -1034,7 +898,7 @@ class MainWindow(QMainWindow):
         root_layout = QVBoxLayout(central)
 
         top_bar = QHBoxLayout()
-        self.open_btn = QPushButton("対象フォルダを開く...")
+        self.open_btn = QPushButton("対象フォルダを開く... (Ctrl+O)")
         self.open_btn.clicked.connect(self.open_folder_dialog)
         top_bar.addWidget(self.open_btn)
 
@@ -1056,7 +920,7 @@ class MainWindow(QMainWindow):
         self.panel = ReviewPanel()
         splitter.addWidget(self.canvas)
         splitter.addWidget(self.panel)
-        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(0, 6)
         splitter.setStretchFactor(1, 1)
         root_layout.addWidget(splitter)
 
@@ -1068,8 +932,6 @@ class MainWindow(QMainWindow):
         self.panel.ng_btn.clicked.connect(lambda: self.set_current_status(STATUS_NG))
         self.panel.hold_btn.clicked.connect(lambda: self.set_current_status(STATUS_HOLD))
         self.panel.reason_combo.currentTextChanged.connect(self.on_reason_changed)
-        self.panel.delete_btn.clicked.connect(self.delete_selected_bbox)
-        self.panel.add_mode_btn.toggled.connect(self.canvas.set_add_mode)
         self.panel.no_detection_btn.toggled.connect(self.on_no_detection_mode_toggled)
         self.panel.filter_combo.currentTextChanged.connect(self.on_filter_changed)
         self.panel.search_edit.returnPressed.connect(self.on_search)
@@ -1079,18 +941,34 @@ class MainWindow(QMainWindow):
         self.panel.table.itemSelectionChanged.connect(self.on_table_selection_changed)
 
         self.canvas.bboxSelected.connect(self.on_canvas_selection_changed)
-        self.canvas.bboxGeometryChanged.connect(self.on_bbox_geometry_changed)
-        self.canvas.bboxDeleted.connect(self.on_bbox_deleted)
-        self.canvas.newBboxRequested.connect(self.on_new_bbox_requested)
 
     def _build_shortcuts(self):
+        # 画像切替
         QShortcut(QKeySequence("A"), self, activated=self.go_prev)
         QShortcut(QKeySequence("D"), self, activated=self.go_next)
+        # 検出（BBox）切替
+        QShortcut(QKeySequence("W"), self, activated=self.select_prev_detection)
+        QShortcut(QKeySequence("S"), self, activated=self.select_next_detection)
+        # 状態設定
         QShortcut(QKeySequence("1"), self, activated=lambda: self.set_current_status(STATUS_OK))
         QShortcut(QKeySequence("2"), self, activated=lambda: self.set_current_status(STATUS_NG))
         QShortcut(QKeySequence("3"), self, activated=lambda: self.set_current_status(STATUS_HOLD))
-        QShortcut(QKeySequence("N"), self, activated=self.panel.add_mode_btn.toggle)
-        QShortcut(QKeySequence(Qt.Key_Delete), self, activated=self.delete_selected_bbox)
+        for key, reason in zip(("Shift+1", "Shift+2", "Shift+3", "Shift+4"), NG_REASONS):
+            QShortcut(QKeySequence(key), self, activated=lambda r=reason: self.set_current_status(STATUS_NG, r))
+        # フィルタ・表示モード
+        QShortcut(QKeySequence("["), self, activated=lambda: self.cycle_filter(-1))
+        QShortcut(QKeySequence("]"), self, activated=lambda: self.cycle_filter(1))
+        QShortcut(QKeySequence("M"), self, activated=self.panel.no_detection_btn.toggle)
+        QShortcut(QKeySequence("Ctrl+F"), self, activated=self.panel.search_edit.setFocus)
+        # フォルダ・出力・保存
+        QShortcut(QKeySequence("Ctrl+O"), self, activated=self.open_folder_dialog)
+        QShortcut(QKeySequence("Ctrl+E"), self, activated=self.export_dataset_dialog)
+        QShortcut(QKeySequence("Ctrl+S"), self, activated=self._do_autosave)
+        # ズーム
+        QShortcut(QKeySequence("+"), self, activated=self.canvas.zoom_in)
+        QShortcut(QKeySequence("="), self, activated=self.canvas.zoom_in)
+        QShortcut(QKeySequence("-"), self, activated=self.canvas.zoom_out)
+        QShortcut(QKeySequence("0"), self, activated=self.canvas.fit_view)
 
     # ---- フォルダ読込 ----
     def open_folder_dialog(self):
@@ -1240,15 +1118,15 @@ class MainWindow(QMainWindow):
         self.panel.select_detection_row(det)
 
     # ---- ステータス設定 ----
-    def set_current_status(self, status: str):
+    def set_current_status(self, status: str, ng_reason: Optional[str] = None):
         det = self.panel.selected_detection() or (self.canvas.selected_item.detection if self.canvas.selected_item else None)
         if det is None:
             self.status_bar.showMessage("BBoxが選択されていません", 2000)
             return
         det.status = status
-        if status == STATUS_NG and not det.ng_reason:
-            det.ng_reason = self.panel.reason_combo.currentText()
-        elif status != STATUS_NG:
+        if status == STATUS_NG:
+            det.ng_reason = ng_reason or det.ng_reason or self.panel.reason_combo.currentText()
+        else:
             det.ng_reason = None
         record = self.current_record()
         if record is not None:
@@ -1263,56 +1141,29 @@ class MainWindow(QMainWindow):
             det.ng_reason = text
             self.mark_dirty()
 
-    # ---- BBox編集（追加／移動／サイズ変更／削除） ----
-    def on_new_bbox_requested(self, rect: QRectF):
+    # ---- 検出（BBox）選択のキーボード操作 ----
+    def _select_detection_by_offset(self, offset: int):
         record = self.current_record()
-        if record is None:
+        if record is None or not record.detections:
             return
-        dialog = ClassSelectDialog(self)
-        if dialog.exec() != QDialog.Accepted:
-            return
-        class_id = dialog.selected_class()
-        img_w, img_h = self.canvas.image_size()
-        x1 = max(0.0, min(rect.x(), img_w))
-        y1 = max(0.0, min(rect.y(), img_h))
-        x2 = max(0.0, min(rect.x() + rect.width(), img_w))
-        y2 = max(0.0, min(rect.y() + rect.height(), img_h))
-        if x2 - x1 < 1 or y2 - y1 < 1:
-            self.status_bar.showMessage("画像範囲外のためBBoxを作成できませんでした", 3000)
-            return
-        next_id = max((d.bbox_id for d in record.detections), default=-1) + 1
-        det = Detection(
-            bbox_id=next_id, class_id=class_id, confidence=None,
-            bbox=[x1, y1, x2, y2],
-            source=SOURCE_MANUAL, status=STATUS_OK,
-        )
-        record.detections.append(det)
-        self.canvas.add_detection(det)
-        self.panel.populate_table(record.detections)
-        self.canvas.select_detection(det)
-        self._update_progress_label()
-        self.mark_dirty()
+        dets = record.detections
+        current = self.panel.selected_detection()
+        idx = dets.index(current) if current in dets else (-1 if offset > 0 else 0)
+        new_idx = (idx + offset) % len(dets)
+        self.canvas.select_detection(dets[new_idx])
 
-    def on_bbox_geometry_changed(self, det: Detection):
-        record = self.current_record()
-        if record is not None:
-            self.panel.populate_table(record.detections)
-            self.panel.select_detection_row(det)
-        self.mark_dirty()
+    def select_next_detection(self):
+        self._select_detection_by_offset(1)
 
-    def on_bbox_deleted(self, det: Detection):
-        record = self.current_record()
-        if record is not None and det in record.detections:
-            record.detections.remove(det)
-            self.panel.populate_table(record.detections)
-            self.panel.select_detection_row(None)
-        if self.state is not None:
-            self.state.deleted_count += 1
-        self._update_progress_label()
-        self.mark_dirty()
+    def select_prev_detection(self):
+        self._select_detection_by_offset(-1)
 
-    def delete_selected_bbox(self):
-        self.canvas.delete_selected()
+    # ---- フィルタのキーボード操作 ----
+    def cycle_filter(self, direction: int):
+        current = self.panel.filter_combo.currentText()
+        idx = FILTER_OPTIONS.index(current) if current in FILTER_OPTIONS else 0
+        new_idx = (idx + direction) % len(FILTER_OPTIONS)
+        self.panel.filter_combo.setCurrentText(FILTER_OPTIONS[new_idx])
 
     # ---- 自動保存 ----
     def mark_dirty(self):
@@ -1386,7 +1237,8 @@ def main():
     app.setApplicationName("AI物体検出結果レビューツール")
     install_excepthook()
     win = MainWindow()
-    win.resize(1600, 950)
+    win.resize(1920, 1080)
+    win.showMaximized()
     win.show()
     sys.exit(app.exec())
 
