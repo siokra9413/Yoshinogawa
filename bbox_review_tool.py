@@ -25,7 +25,7 @@ import cv2
 import numpy as np
 import pandas as pd
 
-from PySide6.QtCore import Qt, QTimer, QRectF, QSettings, Signal
+from PySide6.QtCore import Qt, QTimer, QRectF, QSettings, Signal, QObject, QThread
 from PySide6.QtGui import (
     QImage, QPixmap, QPainter, QPen, QBrush, QColor, QShortcut, QKeySequence,
 )
@@ -34,7 +34,7 @@ from PySide6.QtWidgets import (
     QGraphicsRectItem, QGraphicsPixmapItem, QGraphicsItem, QVBoxLayout,
     QHBoxLayout, QFormLayout, QLabel, QPushButton, QFileDialog, QSplitter,
     QTableWidget, QTableWidgetItem, QComboBox, QLineEdit, QMessageBox,
-    QStatusBar, QAbstractItemView, QHeaderView,
+    QStatusBar, QAbstractItemView, QHeaderView, QProgressDialog,
     QGroupBox, QSizePolicy, QTabWidget, QButtonGroup, QFrame,
 )
 
@@ -47,6 +47,8 @@ CLASS_NAMES = {0: "Person", 2: "Vehicle"}
 
 REVIEW_MIN = 0.3
 REVIEW_MAX = 0.5  # この値以上の検出はそもそも読み込まない（仕様確定事項）
+
+MAX_IMAGES = 1000  # これを超える画像数のフォルダは読み込まずアラートを出す
 
 STATUS_OK = "OK"
 STATUS_NG = "NG"
@@ -200,10 +202,19 @@ def find_images(root: Path):
             yield p
 
 
+class TooManyImagesError(Exception):
+    def __init__(self, count: int):
+        super().__init__(f"画像数が上限を超えています: {count}枚 (上限 {MAX_IMAGES}枚)")
+        self.count = count
+
+
 def scan_folder(root: Path, warnings: list):
     stats = ScanStats()
     records = []
-    for img_path in sorted(find_images(root), key=lambda p: str(p).lower()):
+    image_paths = sorted(find_images(root), key=lambda p: str(p).lower())
+    if len(image_paths) > MAX_IMAGES:
+        raise TooManyImagesError(len(image_paths))
+    for img_path in image_paths:
         stats.total_images += 1
         txt_path = img_path.with_suffix(".txt")
         has_txt = txt_path.exists()
@@ -854,6 +865,32 @@ class ReviewPanel(QWidget):
 
 
 # ============================================================
+# フォルダ読込ワーカー（別スレッドで実行しUIをブロックしない）
+# ============================================================
+
+class FolderLoadWorker(QObject):
+    succeeded = Signal(object)
+    tooManyImages = Signal(int)
+    failed = Signal(str)
+
+    def __init__(self, root: Path):
+        super().__init__()
+        self.root = root
+
+    def run(self):
+        try:
+            state = AppState(self.root)
+            state.load_or_scan()
+        except TooManyImagesError as e:
+            self.tooManyImages.emit(e.count)
+            return
+        except OSError as e:
+            self.failed.emit(str(e))
+            return
+        self.succeeded.emit(state)
+
+
+# ============================================================
 # GUI: メインウィンドウ
 # ============================================================
 
@@ -966,14 +1003,51 @@ class MainWindow(QMainWindow):
             self.load_folder(Path(path))
 
     def load_folder(self, root: Path):
-        try:
-            state = AppState(root)
-            state.load_or_scan()
-        except OSError as e:
-            QMessageBox.critical(self, "エラー", f"フォルダの読込に失敗しました:\n{e}")
+        if getattr(self, "_load_thread", None) is not None:
             return
+        self.open_btn.setEnabled(False)
+        self._loading_dialog = QProgressDialog("フォルダを読み込み中...", None, 0, 0, self)
+        self._loading_dialog.setWindowTitle("読み込み中")
+        self._loading_dialog.setWindowModality(Qt.WindowModal)
+        self._loading_dialog.setCancelButton(None)
+        self._loading_dialog.setMinimumDuration(0)
+        self._loading_dialog.show()
+
+        self._load_thread = QThread(self)
+        self._load_worker = FolderLoadWorker(root)
+        self._load_worker.moveToThread(self._load_thread)
+        self._load_thread.started.connect(self._load_worker.run)
+        self._load_worker.succeeded.connect(self._on_folder_load_succeeded)
+        self._load_worker.tooManyImages.connect(self._on_folder_load_too_many_images)
+        self._load_worker.failed.connect(self._on_folder_load_failed)
+        for sig in (self._load_worker.succeeded, self._load_worker.tooManyImages, self._load_worker.failed):
+            sig.connect(self._load_thread.quit)
+        self._load_thread.finished.connect(self._on_load_thread_finished)
+        self._load_thread.start()
+
+    def _on_load_thread_finished(self):
+        self._loading_dialog.close()
+        self._loading_dialog = None
+        self._load_worker.deleteLater()
+        self._load_thread.deleteLater()
+        self._load_worker = None
+        self._load_thread = None
+        self.open_btn.setEnabled(True)
+
+    def _on_folder_load_too_many_images(self, count: int):
+        QMessageBox.warning(
+            self, "画像数が多すぎます",
+            f"対象フォルダの画像数が上限を超えています。\n\n"
+            f"画像数: {count}枚 / 上限: {MAX_IMAGES}枚\n\n"
+            f"フォルダを分割するなどして上限以下にしてから開いてください。",
+        )
+
+    def _on_folder_load_failed(self, message: str):
+        QMessageBox.critical(self, "エラー", f"フォルダの読込に失敗しました:\n{message}")
+
+    def _on_folder_load_succeeded(self, state: AppState):
         self.state = state
-        self.settings.setValue("last_root", str(root))
+        self.settings.setValue("last_root", str(state.root))
         self._update_stat_labels()
         if state.warnings:
             self.status_bar.showMessage(f"警告 {len(state.warnings)}件（詳細はログ参照）", 5000)
