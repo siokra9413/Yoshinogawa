@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """AI物体検出結果 レビュー・アノテーションツール（単一ファイル版）
 
-対象フォルダ配下の *.jpg / *.txt（AI検出結果）を再帰的に読み込み、
+対象フォルダ（複数選択可）配下の *.jpg / *.txt（AI検出結果）を再帰的に読み込み、
 信頼値0.3〜0.5の境界検出のみを対象に目視レビューを行い、
 YOLO形式の教師データセット（train/val分割済み）を出力する。
 信頼値0.5以上の検出はそもそも読み込まない。BBoxの位置編集は行わない
@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QComboBox, QLineEdit, QMessageBox,
     QStatusBar, QAbstractItemView, QHeaderView, QProgressDialog,
     QGroupBox, QSizePolicy, QTabWidget, QButtonGroup, QFrame,
+    QListView, QTreeView,
 )
 
 
@@ -131,6 +132,7 @@ def bbox_color(detection: Detection) -> QColor:
 @dataclass
 class ImageRecord:
     path: Path
+    root: Path
     rel_key: str
     txt_path: Optional[Path]
     has_txt: bool
@@ -207,16 +209,21 @@ class TooManyImagesError(Exception):
         super().__init__(f"画像数が上限（{MAX_IMAGES}枚）を超えています")
 
 
+def check_image_count_within_limit(roots: list):
+    """全フォルダ合計の画像数を数える。上限を超えた時点で走査を打ち切って例外を送出する
+    （全件走査してから比較すると、巨大フォルダでハング/メモリ枯渇の原因になる）。"""
+    total = 0
+    for root in roots:
+        for _ in find_images(root):
+            total += 1
+            if total > MAX_IMAGES:
+                raise TooManyImagesError()
+
+
 def scan_folder(root: Path, warnings: list):
     stats = ScanStats()
     records = []
-    image_paths = []
-    for p in find_images(root):
-        image_paths.append(p)
-        if len(image_paths) > MAX_IMAGES:
-            # 上限を超えた時点で走査を打ち切る（全件走査すると巨大フォルダでハング/メモリ枯渇の原因になる）
-            raise TooManyImagesError()
-    image_paths.sort(key=lambda p: str(p).lower())
+    image_paths = sorted(find_images(root), key=lambda p: str(p).lower())
     for img_path in image_paths:
         stats.total_images += 1
         txt_path = img_path.with_suffix(".txt")
@@ -247,11 +254,23 @@ def scan_folder(root: Path, warnings: list):
         if has_review_target:
             stats.review_target_images += 1
         records.append(ImageRecord(
-            path=img_path, rel_key=rel_key,
+            path=img_path, root=root, rel_key=rel_key,
             txt_path=txt_path if has_txt else None,
             has_txt=has_txt, detections=detections,
         ))
     return records, stats
+
+
+def scan_folders(roots: list, warnings: list):
+    check_image_count_within_limit(roots)
+    combined_stats = ScanStats()
+    records = []
+    for root in roots:
+        sub_records, sub_stats = scan_folder(root, warnings)
+        records.extend(sub_records)
+        for key in vars(combined_stats):
+            setattr(combined_stats, key, getattr(combined_stats, key) + getattr(sub_stats, key))
+    return records, combined_stats
 
 
 # ============================================================
@@ -259,8 +278,8 @@ def scan_folder(root: Path, warnings: list):
 # ============================================================
 
 class AppState:
-    def __init__(self, root: Path):
-        self.root = root
+    def __init__(self, roots: list):
+        self.roots = roots
         self.records: list = []
         self.stats = ScanStats()
         self.warnings: list = []
@@ -269,73 +288,84 @@ class AppState:
         self.no_detection_mode: bool = False
         self.deleted_count: int = 0
 
-    def state_path(self) -> Path:
-        return self.root / STATE_FILENAME
+    def state_path_for(self, root: Path) -> Path:
+        return root / STATE_FILENAME
 
-    def result_csv_path(self) -> Path:
-        return self.root / RESULT_CSV_FILENAME
+    def result_csv_path_for(self, root: Path) -> Path:
+        return root / RESULT_CSV_FILENAME
 
     def load_or_scan(self):
-        self.records, self.stats = scan_folder(self.root, self.warnings)
+        self.records, self.stats = scan_folders(self.roots, self.warnings)
         self._try_load_state()
 
     def _try_load_state(self):
-        path = self.state_path()
-        if not path.exists():
-            return
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as e:
-            self.warnings.append(f"状態ファイルの読込に失敗しました: {e}")
-            return
-        by_key = {r.rel_key: r for r in self.records}
-        for img_data in data.get("images", []):
-            rec = by_key.get(img_data.get("rel_key"))
-            if rec is None:
+        # フィルタ・表示モード・カーソル位置はセッション共通設定として、
+        # 保存済み状態ファイルが見つかった最初のフォルダの値を採用する。
+        primary_loaded = False
+        for root in self.roots:
+            path = self.state_path_for(root)
+            if not path.exists():
                 continue
             try:
-                rec.detections = [Detection.from_dict(d) for d in img_data.get("detections", [])]
-            except (KeyError, TypeError, ValueError):
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as e:
+                self.warnings.append(f"状態ファイルの読込に失敗しました: {e}")
                 continue
-        if self.records:
-            self.current_index = max(0, min(data.get("current_index", 0), len(self.records) - 1))
-        self.filter_mode = data.get("filter_mode", self.filter_mode)
-        self.no_detection_mode = bool(data.get("no_detection_mode", False))
-        self.deleted_count = int(data.get("deleted_count", 0))
+            by_key = {r.rel_key: r for r in self.records if r.root == root}
+            for img_data in data.get("images", []):
+                rec = by_key.get(img_data.get("rel_key"))
+                if rec is None:
+                    continue
+                try:
+                    rec.detections = [Detection.from_dict(d) for d in img_data.get("detections", [])]
+                except (KeyError, TypeError, ValueError):
+                    continue
+            self.deleted_count += int(data.get("deleted_count", 0))
+            if not primary_loaded:
+                self.filter_mode = data.get("filter_mode", self.filter_mode)
+                self.no_detection_mode = bool(data.get("no_detection_mode", False))
+                if self.records:
+                    self.current_index = max(0, min(data.get("current_index", 0), len(self.records) - 1))
+                primary_loaded = True
 
     def save_state(self):
-        data = {
-            "root": str(self.root),
-            "current_index": self.current_index,
-            "filter_mode": self.filter_mode,
-            "no_detection_mode": self.no_detection_mode,
-            "deleted_count": self.deleted_count,
-            "images": [
-                {"rel_key": r.rel_key, "detections": [d.to_dict() for d in r.detections]}
-                for r in self.records
-            ],
-        }
-        tmp_path = self.state_path().with_suffix(".json.tmp")
-        try:
-            tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
-            tmp_path.replace(self.state_path())
-        except OSError as e:
-            self.warnings.append(f"状態の自動保存に失敗しました: {e}")
+        for root in self.roots:
+            recs = [r for r in self.records if r.root == root]
+            data = {
+                "root": str(root),
+                "current_index": self.current_index,
+                "filter_mode": self.filter_mode,
+                "no_detection_mode": self.no_detection_mode,
+                "deleted_count": self.deleted_count,
+                "images": [
+                    {"rel_key": r.rel_key, "detections": [d.to_dict() for d in r.detections]}
+                    for r in recs
+                ],
+            }
+            path = self.state_path_for(root)
+            tmp_path = path.with_suffix(".json.tmp")
+            try:
+                tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+                tmp_path.replace(path)
+            except OSError as e:
+                self.warnings.append(f"状態の自動保存に失敗しました ({root}): {e}")
 
     def save_result_csv(self):
-        rows = []
-        for r in self.records:
-            for d in r.detections:
-                rows.append({
-                    "image_name": r.name,
-                    "bbox_id": d.bbox_id,
-                    "status": d.status,
-                })
-        df = pd.DataFrame(rows, columns=["image_name", "bbox_id", "status"])
-        try:
-            df.to_csv(self.result_csv_path(), index=False, encoding="utf-8-sig")
-        except OSError as e:
-            self.warnings.append(f"{RESULT_CSV_FILENAME} の保存に失敗しました: {e}")
+        for root in self.roots:
+            recs = [r for r in self.records if r.root == root]
+            rows = []
+            for r in recs:
+                for d in r.detections:
+                    rows.append({
+                        "image_name": r.name,
+                        "bbox_id": d.bbox_id,
+                        "status": d.status,
+                    })
+            df = pd.DataFrame(rows, columns=["image_name", "bbox_id", "status"])
+            try:
+                df.to_csv(self.result_csv_path_for(root), index=False, encoding="utf-8-sig")
+            except OSError as e:
+                self.warnings.append(f"{RESULT_CSV_FILENAME} の保存に失敗しました ({root}): {e}")
 
     def _matches_filter(self, r: ImageRecord) -> bool:
         f = self.filter_mode
@@ -399,13 +429,22 @@ class AppState:
 # ============================================================
 
 def export_dataset(state: AppState, out_dir: Path, warnings: list) -> dict:
+    # 複数フォルダを開いている場合、同名ファイルの衝突を避けるため出力先を
+    # フォルダごとのサブディレクトリに分ける。単一フォルダの場合は従来通りの構成のまま。
+    multi_root = len(state.roots) > 1
+    root_tags = {root: (f"{i:02d}_{root.name}" if multi_root else "") for i, root in enumerate(state.roots)}
+
+    def dataset_rel(r: ImageRecord) -> Path:
+        tag = root_tags[r.root]
+        return (Path(tag) / r.rel_key) if tag else Path(r.rel_key)
+
     entries = []
     for r in state.records:
         included = [d for d in r.detections if d.status == STATUS_OK]
         if included:
             entries.append((r, included))
 
-    keys = [r.rel_key for r, _ in entries]
+    keys = [str(dataset_rel(r)) for r, _ in entries]
     shuffled = list(keys)
     random.Random(42).shuffle(shuffled)
     split_point = int(len(shuffled) * 0.8)
@@ -422,11 +461,12 @@ def export_dataset(state: AppState, out_dir: Path, warnings: list) -> dict:
     final_image_count = 0
 
     for r, included in entries:
-        is_train = r.rel_key in train_keys
+        rel = dataset_rel(r)
+        is_train = str(rel) in train_keys
         img_dest_dir = images_train if is_train else images_val
         lbl_dest_dir = labels_train if is_train else labels_val
-        dest_img_path = img_dest_dir / r.rel_key
-        dest_lbl_path = (lbl_dest_dir / r.rel_key).with_suffix(".txt")
+        dest_img_path = img_dest_dir / rel
+        dest_lbl_path = (lbl_dest_dir / rel).with_suffix(".txt")
         dest_img_path.parent.mkdir(parents=True, exist_ok=True)
         dest_lbl_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -881,13 +921,13 @@ class FolderLoadWorker(QObject):
     tooManyImages = Signal()
     failed = Signal(str)
 
-    def __init__(self, root: Path):
+    def __init__(self, roots: list):
         super().__init__()
-        self.root = root
+        self.roots = roots
 
     def run(self):
         try:
-            state = AppState(self.root)
+            state = AppState(self.roots)
             state.load_or_scan()
         except TooManyImagesError:
             self.tooManyImages.emit()
@@ -898,6 +938,20 @@ class FolderLoadWorker(QObject):
             self.failed.emit(traceback.format_exc())
             return
         self.succeeded.emit(state)
+
+
+def select_multiple_folders(parent) -> list:
+    """複数フォルダを選択できるダイアログ（Qtの標準ダイアログは単一選択のみのため、
+    非ネイティブダイアログの内部ビューを拡張選択モードにして実現する）。"""
+    dialog = QFileDialog(parent, "対象フォルダを選択（Ctrl/Shiftクリックで複数選択可）")
+    dialog.setFileMode(QFileDialog.Directory)
+    dialog.setOption(QFileDialog.DontUseNativeDialog, True)
+    dialog.setOption(QFileDialog.ShowDirsOnly, True)
+    for view in dialog.findChildren((QListView, QTreeView)):
+        view.setSelectionMode(QAbstractItemView.ExtendedSelection)
+    if dialog.exec() != QFileDialog.Accepted:
+        return []
+    return [Path(p) for p in dialog.selectedFiles()]
 
 
 # ============================================================
@@ -918,9 +972,13 @@ class MainWindow(QMainWindow):
         self._autosave_timer.setSingleShot(True)
         self._autosave_timer.timeout.connect(self._do_autosave)
 
-        last_root = self.settings.value("last_root", "")
-        if last_root and Path(last_root).exists():
-            self.load_folder(Path(last_root))
+        try:
+            last_roots = [Path(p) for p in json.loads(self.settings.value("last_roots", "[]"))]
+        except (json.JSONDecodeError, TypeError):
+            last_roots = []
+        last_roots = [p for p in last_roots if p.exists()]
+        if last_roots:
+            self.load_folder(last_roots)
 
     # ---- UI構築 ----
     def _build_ui(self):
@@ -928,7 +986,7 @@ class MainWindow(QMainWindow):
         root_layout = QVBoxLayout(central)
 
         top_bar = QHBoxLayout()
-        self.open_btn = QPushButton("対象フォルダを開く... (Ctrl+O)")
+        self.open_btn = QPushButton("対象フォルダを開く（複数選択可）... (Ctrl+O)")
         self.open_btn.clicked.connect(self.open_folder_dialog)
         top_bar.addWidget(self.open_btn)
 
@@ -1008,11 +1066,11 @@ class MainWindow(QMainWindow):
 
     # ---- フォルダ読込 ----
     def open_folder_dialog(self):
-        path = QFileDialog.getExistingDirectory(self, "対象フォルダを選択")
-        if path:
-            self.load_folder(Path(path))
+        roots = select_multiple_folders(self)
+        if roots:
+            self.load_folder(roots)
 
-    def load_folder(self, root: Path):
+    def load_folder(self, roots: list):
         if getattr(self, "_load_thread", None) is not None:
             return
         self.open_btn.setEnabled(False)
@@ -1024,7 +1082,7 @@ class MainWindow(QMainWindow):
         self._loading_dialog.show()
 
         self._load_thread = QThread(self)
-        self._load_worker = FolderLoadWorker(root)
+        self._load_worker = FolderLoadWorker(roots)
         self._load_worker.moveToThread(self._load_thread)
         self._load_thread.started.connect(self._load_worker.run)
         self._load_worker.succeeded.connect(self._on_folder_load_succeeded)
@@ -1058,7 +1116,7 @@ class MainWindow(QMainWindow):
 
     def _on_folder_load_succeeded(self, state: AppState):
         self.state = state
-        self.settings.setValue("last_root", str(state.root))
+        self.settings.setValue("last_roots", json.dumps([str(r) for r in state.roots]))
         self._update_stat_labels()
         if state.warnings:
             self.status_bar.showMessage(f"警告 {len(state.warnings)}件（詳細はログ参照）", 5000)
@@ -1103,7 +1161,9 @@ class MainWindow(QMainWindow):
         ok = self.canvas.load_record(record)
         if not ok:
             self.status_bar.showMessage(f"画像を読み込めませんでした: {record.path}", 5000)
-        self.panel.image_name_label.setText(f"画像: {record.name}  ({record.rel_key})")
+        multi_root = len(self.state.roots) > 1
+        display_key = f"{record.root.name}/{record.rel_key}" if multi_root else record.rel_key
+        self.panel.image_name_label.setText(f"画像: {record.name}  ({display_key})")
         idxs = self.state.filtered_indices()
         if self.state.current_index in idxs:
             pos_text = f"{idxs.index(self.state.current_index) + 1} / {len(idxs)} 件表示中"
@@ -1113,7 +1173,7 @@ class MainWindow(QMainWindow):
         self.panel.populate_table(record.detections)
         self.canvas.select_detection(record.detections[0] if record.detections else None)
         self._update_progress_label()
-        self.setWindowTitle(f"AI物体検出結果 レビュー・アノテーションツール - {record.rel_key}")
+        self.setWindowTitle(f"AI物体検出結果 レビュー・アノテーションツール - {display_key}")
 
     def _update_progress_label(self):
         if self.state is None:
@@ -1263,7 +1323,7 @@ class MainWindow(QMainWindow):
         if self.state is None:
             QMessageBox.warning(self, "教師データ出力", "先に対象フォルダを開いてください。")
             return
-        default_dir = str(self.state.root / "dataset")
+        default_dir = str(self.state.roots[0] / "dataset")
         path = QFileDialog.getExistingDirectory(self, "出力先フォルダ (dataset) を選択", default_dir)
         if not path:
             return
