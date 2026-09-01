@@ -947,7 +947,7 @@ def select_multiple_folders(parent) -> list:
     dialog.setFileMode(QFileDialog.Directory)
     dialog.setOption(QFileDialog.DontUseNativeDialog, True)
     dialog.setOption(QFileDialog.ShowDirsOnly, True)
-    for view in dialog.findChildren((QListView, QTreeView)):
+    for view in list(dialog.findChildren(QListView)) + list(dialog.findChildren(QTreeView)):
         view.setSelectionMode(QAbstractItemView.ExtendedSelection)
     if dialog.exec() != QFileDialog.Accepted:
         return []

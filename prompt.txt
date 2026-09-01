@@ -1,0 +1,55 @@
+_review_tool.py | 57 ++++++++++++++++++++++++++++++++---------------------
+ 1 file changed, 34 insertions(+), 23 deletions(-)
+
+(.venv) C:\Users\Administrator\Desktop\miyazaki_work\tools\filter\Yoshinogawa>python.exe bbox_review_tool.py
+bbox_review_tool.py:670: DeprecationWarning: Function: 'QMouseEvent.pos() const' is marked as deprecated, please check the documentation for more information.
+  item = self.itemAt(event.pos())
+
+(.venv) C:\Users\Administrator\Desktop\miyazaki_work\tools\filter\Yoshinogawa>git pull origin main
+remote: Enumerating objects: 5, done.
+remote: Counting objects: 100% (5/5), done.
+remote: Compressing objects: 100% (1/1), done.
+remote: Total 3 (delta 2), reused 3 (delta 2), pack-reused 0 (from 0)
+Unpacking objects: 100% (3/3), 2.39 KiB | 144.00 KiB/s, done.
+From https://github.com/siokra9413/Yoshinogawa
+ * branch            main       -> FETCH_HEAD
+   4218027..7285f1d  main       -> origin/main
+Updating 4218027..7285f1d
+Fast-forward
+ bbox_review_tool.py | 230 +++++++++++++++++++++++++++++++++-------------------
+ 1 file changed, 145 insertions(+), 85 deletions(-)
+
+(.venv) C:\Users\Administrator\Desktop\miyazaki_work\tools\filter\Yoshinogawa>python.exe bbox_review_tool.py
+Traceback (most recent call last):
+  File "bbox_review_tool.py", line 1069, in open_folder_dialog
+    roots = select_multiple_folders(self)
+  File "bbox_review_tool.py", line 950, in select_multiple_folders
+    for view in dialog.findChildren((QListView, QTreeView)):
+TypeError: 'PySide6.QtCore.QObject.findChildren' called with wrong argument types:
+  PySide6.QtCore.QObject.findChildren(tuple)
+Supported signatures:
+  PySide6.QtCore.QObject.findChildren(type, str = {}, PySide6.QtCore.Qt.FindChildOption = Instance(Qt.FindChildrenRecursively))
+  PySide6.QtCore.QObject.findChildren(type, Union[PySide6.QtCore.QRegularExpression, str], PySide6.QtCore.Qt.FindChildOption = Instance(Qt.FindChildrenRecursively))
+
+Traceback (most recent call last):
+  File "bbox_review_tool.py", line 1069, in open_folder_dialog
+    roots = select_multiple_folders(self)
+  File "bbox_review_tool.py", line 950, in select_multiple_folders
+    for view in dialog.findChildren((QListView, QTreeView)):
+TypeError: 'PySide6.QtCore.QObject.findChildren' called with wrong argument types:
+  PySide6.QtCore.QObject.findChildren(tuple)
+Supported signatures:
+  PySide6.QtCore.QObject.findChildren(type, str = {}, PySide6.QtCore.Qt.FindChildOption = Instance(Qt.FindChildrenRecursively))
+  PySide6.QtCore.QObject.findChildren(type, Union[PySide6.QtCore.QRegularExpression, str], PySide6.QtCore.Qt.FindChildOption = Instance(Qt.FindChildrenRecursively))
+
+Traceback (most recent call last):
+  File "bbox_review_tool.py", line 1069, in open_folder_dialog
+    roots = select_multiple_folders(self)
+  File "bbox_review_tool.py", line 950, in select_multiple_folders
+    for view in dialog.findChildren((QListView, QTreeView)):
+TypeError: 'PySide6.QtCore.QObject.findChildren' called with wrong argument types:
+  PySide6.QtCore.QObject.findChildren(tuple)
+Supported signatures:
+  PySide6.QtCore.QObject.findChildren(type, str = {}, PySide6.QtCore.Qt.FindChildOption = Instance(Qt.FindChildrenRecursively))
+  PySide6.QtCore.QObject.findChildren(type, Union[PySide6.QtCore.QRegularExpression, str], PySide6.QtCore.Qt.FindChildOption = Instance(Qt.FindChildrenRecursively))
+
