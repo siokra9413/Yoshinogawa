@@ -53,8 +53,6 @@ STATUS_NG = "NG"
 STATUS_HOLD = "保留"
 STATUS_UNCONFIRMED = "未確認"
 
-NG_REASONS = ["誤検出", "人", "車", "その他"]
-
 SOURCE_AI = "ai"
 SOURCE_MANUAL = "manual"
 
@@ -96,7 +94,6 @@ class Detection:
     bbox: list
     source: str
     status: str
-    ng_reason: Optional[str] = None
 
     def to_dict(self):
         return asdict(self)
@@ -110,7 +107,6 @@ class Detection:
             bbox=[float(v) for v in d["bbox"]],
             source=d.get("source", SOURCE_AI),
             status=d.get("status", STATUS_UNCONFIRMED),
-            ng_reason=d.get("ng_reason"),
         )
 
     @property
@@ -219,14 +215,14 @@ def scan_folder(root: Path, warnings: list):
             raw = parse_detection_file(txt_path, warnings)
             bbox_id = 0
             for d in raw:
+                conf = d["confidence"]
+                if not (REVIEW_MIN <= conf < REVIEW_MAX):
+                    continue
                 stats.total_detections += 1
                 if d["class_id"] == 0:
                     stats.person_count += 1
                 elif d["class_id"] == 2:
                     stats.vehicle_count += 1
-                conf = d["confidence"]
-                if not (REVIEW_MIN <= conf < REVIEW_MAX):
-                    continue
                 stats.review_target_count += 1
                 has_review_target = True
                 detections.append(Detection(
@@ -320,9 +316,8 @@ class AppState:
                     "image_name": r.name,
                     "bbox_id": d.bbox_id,
                     "status": d.status,
-                    "reason": d.ng_reason or "",
                 })
-        df = pd.DataFrame(rows, columns=["image_name", "bbox_id", "status", "reason"])
+        df = pd.DataFrame(rows, columns=["image_name", "bbox_id", "status"])
         try:
             df.to_csv(self.result_csv_path(), index=False, encoding="utf-8-sig")
         except OSError as e:
@@ -718,8 +713,7 @@ class ReviewPanel(QWidget):
         legend.setStyleSheet("color: #444;")
         layout.addWidget(legend)
         shortcut_hint = QLabel(
-            "検出選択: W(前) / S(次)　画像切替: A(前) / D(次)　状態: 1=OK 2=NG 3=保留　"
-            "NG理由: Shift+1〜4"
+            "検出選択: W(前) / S(次)　画像切替: A(前) / D(次)　状態: 1=OK 2=NG 3=保留"
         )
         shortcut_hint.setStyleSheet("color: #666; font-size: 11px;")
         shortcut_hint.setWordWrap(True)
@@ -761,14 +755,6 @@ class ReviewPanel(QWidget):
         for b in (self.ok_btn, self.ng_btn, self.hold_btn):
             self.status_button_group.addButton(b)
         status_layout.addLayout(btn_row)
-
-        reason_row = QHBoxLayout()
-        reason_row.addWidget(QLabel("NG理由 (Shift+1〜4):"))
-        self.reason_combo = QComboBox()
-        self.reason_combo.addItems(NG_REASONS)
-        self.reason_combo.setEnabled(False)
-        reason_row.addWidget(self.reason_combo)
-        status_layout.addLayout(reason_row)
         status_box.setLayout(status_layout)
         review_layout.addWidget(status_box)
 
@@ -816,8 +802,8 @@ class ReviewPanel(QWidget):
         )
         layout.addWidget(self.export_btn)
 
-        self.setMinimumWidth(300)
-        self.setMaximumWidth(340)
+        self.setMinimumWidth(260)
+        self.setMaximumWidth(280)
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
 
     def _on_no_detection_toggled(self, checked: bool):
@@ -854,7 +840,7 @@ class ReviewPanel(QWidget):
         self.sync_status_controls(det)
 
     def sync_status_controls(self, det: Optional[Detection]):
-        """選択中BBoxの状態をOK/NG/保留ボタンとNG理由に反映する。"""
+        """選択中BBoxの状態をOK/NG/保留ボタンに反映する。"""
         buttons = {STATUS_OK: self.ok_btn, STATUS_NG: self.ng_btn, STATUS_HOLD: self.hold_btn}
         self.status_button_group.setExclusive(False)
         for b in buttons.values():
@@ -865,9 +851,6 @@ class ReviewPanel(QWidget):
             b.setEnabled(enabled)
         if det is not None and det.status in buttons:
             buttons[det.status].setChecked(True)
-        self.reason_combo.setEnabled(det is not None and det.status == STATUS_NG)
-        if det is not None and det.ng_reason and det.ng_reason in NG_REASONS:
-            self.reason_combo.setCurrentText(det.ng_reason)
 
 
 # ============================================================
@@ -903,13 +886,22 @@ class MainWindow(QMainWindow):
         top_bar.addWidget(self.open_btn)
 
         self.stats_box = QGroupBox("起動時集計")
-        stats_layout = QFormLayout()
+        stats_layout = QHBoxLayout()
         self.stat_labels = {}
         for key in ["総画像数", "txtファイル数", "総検出数", "Person件数", "Vehicle件数",
                     "0.3～0.5の検出数", "レビュー対象画像数"]:
-            label = QLabel("-")
-            self.stat_labels[key] = label
-            stats_layout.addRow(f"{key}:", label)
+            item_box = QVBoxLayout()
+            item_box.setSpacing(0)
+            caption = QLabel(key)
+            caption.setStyleSheet("color: #666; font-size: 10px;")
+            caption.setAlignment(Qt.AlignCenter)
+            value = QLabel("-")
+            value.setStyleSheet("font-weight: bold; font-size: 13px;")
+            value.setAlignment(Qt.AlignCenter)
+            self.stat_labels[key] = value
+            item_box.addWidget(caption)
+            item_box.addWidget(value)
+            stats_layout.addLayout(item_box)
         self.stats_box.setLayout(stats_layout)
         top_bar.addWidget(self.stats_box)
         top_bar.addStretch(1)
@@ -920,7 +912,7 @@ class MainWindow(QMainWindow):
         self.panel = ReviewPanel()
         splitter.addWidget(self.canvas)
         splitter.addWidget(self.panel)
-        splitter.setStretchFactor(0, 6)
+        splitter.setStretchFactor(0, 12)
         splitter.setStretchFactor(1, 1)
         root_layout.addWidget(splitter)
 
@@ -931,7 +923,6 @@ class MainWindow(QMainWindow):
         self.panel.ok_btn.clicked.connect(lambda: self.set_current_status(STATUS_OK))
         self.panel.ng_btn.clicked.connect(lambda: self.set_current_status(STATUS_NG))
         self.panel.hold_btn.clicked.connect(lambda: self.set_current_status(STATUS_HOLD))
-        self.panel.reason_combo.currentTextChanged.connect(self.on_reason_changed)
         self.panel.no_detection_btn.toggled.connect(self.on_no_detection_mode_toggled)
         self.panel.filter_combo.currentTextChanged.connect(self.on_filter_changed)
         self.panel.search_edit.returnPressed.connect(self.on_search)
@@ -953,8 +944,6 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("1"), self, activated=lambda: self.set_current_status(STATUS_OK))
         QShortcut(QKeySequence("2"), self, activated=lambda: self.set_current_status(STATUS_NG))
         QShortcut(QKeySequence("3"), self, activated=lambda: self.set_current_status(STATUS_HOLD))
-        for key, reason in zip(("Shift+1", "Shift+2", "Shift+3", "Shift+4"), NG_REASONS):
-            QShortcut(QKeySequence(key), self, activated=lambda r=reason: self.set_current_status(STATUS_NG, r))
         # フィルタ・表示モード
         QShortcut(QKeySequence("["), self, activated=lambda: self.cycle_filter(-1))
         QShortcut(QKeySequence("]"), self, activated=lambda: self.cycle_filter(1))
@@ -1037,7 +1026,7 @@ class MainWindow(QMainWindow):
             pos_text = f"- / {len(idxs)} 件表示中"
         self.panel.position_label.setText(pos_text)
         self.panel.populate_table(record.detections)
-        self.panel.select_detection_row(None)
+        self.canvas.select_detection(record.detections[0] if record.detections else None)
         self._update_progress_label()
         self.setWindowTitle(f"AI物体検出結果 レビュー・アノテーションツール - {record.rel_key}")
 
@@ -1118,28 +1107,30 @@ class MainWindow(QMainWindow):
         self.panel.select_detection_row(det)
 
     # ---- ステータス設定 ----
-    def set_current_status(self, status: str, ng_reason: Optional[str] = None):
+    def set_current_status(self, status: str):
         det = self.panel.selected_detection() or (self.canvas.selected_item.detection if self.canvas.selected_item else None)
         if det is None:
             self.status_bar.showMessage("BBoxが選択されていません", 2000)
             return
         det.status = status
-        if status == STATUS_NG:
-            det.ng_reason = ng_reason or det.ng_reason or self.panel.reason_combo.currentText()
-        else:
-            det.ng_reason = None
         record = self.current_record()
         if record is not None:
             self.panel.populate_table(record.detections)
             self.panel.select_detection_row(det)
         self._update_progress_label()
         self.mark_dirty()
+        if status in (STATUS_OK, STATUS_NG):
+            self._advance_after_status(det)
 
-    def on_reason_changed(self, text: str):
-        det = self.panel.selected_detection()
-        if det is not None and det.status == STATUS_NG:
-            det.ng_reason = text
-            self.mark_dirty()
+    def _advance_after_status(self, det: Detection):
+        """OK/NG確定後、次のBBoxへ。画像内の最後のBBoxなら次の画像へ進む。"""
+        record = self.current_record()
+        dets = record.detections if record is not None else []
+        idx = dets.index(det) if det in dets else -1
+        if idx != -1 and idx + 1 < len(dets):
+            self.canvas.select_detection(dets[idx + 1])
+        else:
+            self.go_next()
 
     # ---- 検出（BBox）選択のキーボード操作 ----
     def _select_detection_by_offset(self, offset: int):
