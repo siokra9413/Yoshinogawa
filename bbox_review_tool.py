@@ -203,17 +203,20 @@ def find_images(root: Path):
 
 
 class TooManyImagesError(Exception):
-    def __init__(self, count: int):
-        super().__init__(f"画像数が上限を超えています: {count}枚 (上限 {MAX_IMAGES}枚)")
-        self.count = count
+    def __init__(self):
+        super().__init__(f"画像数が上限（{MAX_IMAGES}枚）を超えています")
 
 
 def scan_folder(root: Path, warnings: list):
     stats = ScanStats()
     records = []
-    image_paths = sorted(find_images(root), key=lambda p: str(p).lower())
-    if len(image_paths) > MAX_IMAGES:
-        raise TooManyImagesError(len(image_paths))
+    image_paths = []
+    for p in find_images(root):
+        image_paths.append(p)
+        if len(image_paths) > MAX_IMAGES:
+            # 上限を超えた時点で走査を打ち切る（全件走査すると巨大フォルダでハング/メモリ枯渇の原因になる）
+            raise TooManyImagesError()
+    image_paths.sort(key=lambda p: str(p).lower())
     for img_path in image_paths:
         stats.total_images += 1
         txt_path = img_path.with_suffix(".txt")
@@ -724,7 +727,7 @@ class ReviewPanel(QWidget):
         legend.setStyleSheet("color: #444;")
         layout.addWidget(legend)
         shortcut_hint = QLabel(
-            "検出選択: W(前) / S(次)　画像切替: A(前) / D(次)　状態: 1=OK 2=NG 3=保留"
+            "検出選択: W(前) / S(次)　画像切替: A(前) / D(次)　状態: O=OK N=NG H=保留"
         )
         shortcut_hint.setStyleSheet("color: #666; font-size: 11px;")
         shortcut_hint.setWordWrap(True)
@@ -737,6 +740,9 @@ class ReviewPanel(QWidget):
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setMaximumHeight(150)
+        # テーブルにキーボードフォーカスが残るとW/S/A/D等のショートカットキーを
+        # 行の頭文字検索として奪ってしまうため、フォーカスを持たせない。
+        self.table.setFocusPolicy(Qt.NoFocus)
         layout.addWidget(self.table)
 
         line = QFrame()
@@ -748,14 +754,14 @@ class ReviewPanel(QWidget):
         review_tab = QWidget()
         review_layout = QVBoxLayout(review_tab)
 
-        status_box = QGroupBox("選択中BBoxの状態 (1=OK / 2=NG / 3=保留)")
+        status_box = QGroupBox("選択中BBoxの状態 (O=OK / N=NG / H=保留)")
         status_layout = QVBoxLayout()
         btn_row = QHBoxLayout()
-        self.ok_btn = QPushButton("OK (1)")
+        self.ok_btn = QPushButton("OK (O)")
         self.ok_btn.setObjectName("okBtn")
-        self.ng_btn = QPushButton("NG (2)")
+        self.ng_btn = QPushButton("NG (N)")
         self.ng_btn.setObjectName("ngBtn")
-        self.hold_btn = QPushButton("保留 (3)")
+        self.hold_btn = QPushButton("保留 (H)")
         self.hold_btn.setObjectName("holdBtn")
         for b in (self.ok_btn, self.ng_btn, self.hold_btn):
             b.setCheckable(True)
@@ -791,6 +797,8 @@ class ReviewPanel(QWidget):
         form = QFormLayout()
         self.filter_combo = QComboBox()
         self.filter_combo.addItems(FILTER_OPTIONS)
+        # コンボボックスにフォーカスが残ると文字キーが項目検索に奪われるため、フォーカスを持たせない。
+        self.filter_combo.setFocusPolicy(Qt.NoFocus)
         form.addRow("フィルタ ([ / ]):", self.filter_combo)
         self.search_edit = QLineEdit()
         self.search_edit.setPlaceholderText("画像名検索 (Ctrl+F, Enter)")
@@ -870,7 +878,7 @@ class ReviewPanel(QWidget):
 
 class FolderLoadWorker(QObject):
     succeeded = Signal(object)
-    tooManyImages = Signal(int)
+    tooManyImages = Signal()
     failed = Signal(str)
 
     def __init__(self, root: Path):
@@ -881,11 +889,13 @@ class FolderLoadWorker(QObject):
         try:
             state = AppState(self.root)
             state.load_or_scan()
-        except TooManyImagesError as e:
-            self.tooManyImages.emit(e.count)
+        except TooManyImagesError:
+            self.tooManyImages.emit()
             return
-        except OSError as e:
-            self.failed.emit(str(e))
+        except Exception:
+            # 別スレッドでの未捕捉例外はアプリ全体をクラッシュさせうるため、
+            # ここで必ず捕捉してメインスレッド側にエラーとして通知する。
+            self.failed.emit(traceback.format_exc())
             return
         self.succeeded.emit(state)
 
@@ -978,9 +988,9 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("W"), self, activated=self.select_prev_detection)
         QShortcut(QKeySequence("S"), self, activated=self.select_next_detection)
         # 状態設定
-        QShortcut(QKeySequence("1"), self, activated=lambda: self.set_current_status(STATUS_OK))
-        QShortcut(QKeySequence("2"), self, activated=lambda: self.set_current_status(STATUS_NG))
-        QShortcut(QKeySequence("3"), self, activated=lambda: self.set_current_status(STATUS_HOLD))
+        QShortcut(QKeySequence("O"), self, activated=lambda: self.set_current_status(STATUS_OK))
+        QShortcut(QKeySequence("N"), self, activated=lambda: self.set_current_status(STATUS_NG))
+        QShortcut(QKeySequence("H"), self, activated=lambda: self.set_current_status(STATUS_HOLD))
         # フィルタ・表示モード
         QShortcut(QKeySequence("["), self, activated=lambda: self.cycle_filter(-1))
         QShortcut(QKeySequence("]"), self, activated=lambda: self.cycle_filter(1))
@@ -1034,16 +1044,17 @@ class MainWindow(QMainWindow):
         self._load_thread = None
         self.open_btn.setEnabled(True)
 
-    def _on_folder_load_too_many_images(self, count: int):
+    def _on_folder_load_too_many_images(self):
         QMessageBox.warning(
             self, "画像数が多すぎます",
-            f"対象フォルダの画像数が上限を超えています。\n\n"
-            f"画像数: {count}枚 / 上限: {MAX_IMAGES}枚\n\n"
+            f"対象フォルダの画像数が上限（{MAX_IMAGES}枚）を超えています。\n\n"
             f"フォルダを分割するなどして上限以下にしてから開いてください。",
         )
 
     def _on_folder_load_failed(self, message: str):
-        QMessageBox.critical(self, "エラー", f"フォルダの読込に失敗しました:\n{message}")
+        print(message, file=sys.stderr)
+        first_line = message.strip().splitlines()[-1] if message.strip() else message
+        QMessageBox.critical(self, "エラー", f"フォルダの読込に失敗しました:\n{first_line}")
 
     def _on_folder_load_succeeded(self, state: AppState):
         self.state = state
