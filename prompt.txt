@@ -1,55 +1,298 @@
-_review_tool.py | 57 ++++++++++++++++++++++++++++++++---------------------
- 1 file changed, 34 insertions(+), 23 deletions(-)
+このコードベースをリファクタリングしてください。
 
-(.venv) C:\Users\Administrator\Desktop\miyazaki_work\tools\filter\Yoshinogawa>python.exe bbox_review_tool.py
-bbox_review_tool.py:670: DeprecationWarning: Function: 'QMouseEvent.pos() const' is marked as deprecated, please check the documentation for more information.
-  item = self.itemAt(event.pos())
+目的は機能追加ではなく、
 
-(.venv) C:\Users\Administrator\Desktop\miyazaki_work\tools\filter\Yoshinogawa>git pull origin main
-remote: Enumerating objects: 5, done.
-remote: Counting objects: 100% (5/5), done.
-remote: Compressing objects: 100% (1/1), done.
-remote: Total 3 (delta 2), reused 3 (delta 2), pack-reused 0 (from 0)
-Unpacking objects: 100% (3/3), 2.39 KiB | 144.00 KiB/s, done.
-From https://github.com/siokra9413/Yoshinogawa
- * branch            main       -> FETCH_HEAD
-   4218027..7285f1d  main       -> origin/main
-Updating 4218027..7285f1d
-Fast-forward
- bbox_review_tool.py | 230 +++++++++++++++++++++++++++++++++-------------------
- 1 file changed, 145 insertions(+), 85 deletions(-)
+- 可読性向上
+- 保守性向上
+- テスタビリティ向上
+- 責務分離
 
-(.venv) C:\Users\Administrator\Desktop\miyazaki_work\tools\filter\Yoshinogawa>python.exe bbox_review_tool.py
-Traceback (most recent call last):
-  File "bbox_review_tool.py", line 1069, in open_folder_dialog
-    roots = select_multiple_folders(self)
-  File "bbox_review_tool.py", line 950, in select_multiple_folders
-    for view in dialog.findChildren((QListView, QTreeView)):
-TypeError: 'PySide6.QtCore.QObject.findChildren' called with wrong argument types:
-  PySide6.QtCore.QObject.findChildren(tuple)
-Supported signatures:
-  PySide6.QtCore.QObject.findChildren(type, str = {}, PySide6.QtCore.Qt.FindChildOption = Instance(Qt.FindChildrenRecursively))
-  PySide6.QtCore.QObject.findChildren(type, Union[PySide6.QtCore.QRegularExpression, str], PySide6.QtCore.Qt.FindChildOption = Instance(Qt.FindChildrenRecursively))
+です。
 
-Traceback (most recent call last):
-  File "bbox_review_tool.py", line 1069, in open_folder_dialog
-    roots = select_multiple_folders(self)
-  File "bbox_review_tool.py", line 950, in select_multiple_folders
-    for view in dialog.findChildren((QListView, QTreeView)):
-TypeError: 'PySide6.QtCore.QObject.findChildren' called with wrong argument types:
-  PySide6.QtCore.QObject.findChildren(tuple)
-Supported signatures:
-  PySide6.QtCore.QObject.findChildren(type, str = {}, PySide6.QtCore.Qt.FindChildOption = Instance(Qt.FindChildrenRecursively))
-  PySide6.QtCore.QObject.findChildren(type, Union[PySide6.QtCore.QRegularExpression, str], PySide6.QtCore.Qt.FindChildOption = Instance(Qt.FindChildrenRecursively))
+動作は絶対に変更しないでください。
 
-Traceback (most recent call last):
-  File "bbox_review_tool.py", line 1069, in open_folder_dialog
-    roots = select_multiple_folders(self)
-  File "bbox_review_tool.py", line 950, in select_multiple_folders
-    for view in dialog.findChildren((QListView, QTreeView)):
-TypeError: 'PySide6.QtCore.QObject.findChildren' called with wrong argument types:
-  PySide6.QtCore.QObject.findChildren(tuple)
-Supported signatures:
-  PySide6.QtCore.QObject.findChildren(type, str = {}, PySide6.QtCore.Qt.FindChildOption = Instance(Qt.FindChildrenRecursively))
-  PySide6.QtCore.QObject.findChildren(type, Union[PySide6.QtCore.QRegularExpression, str], PySide6.QtCore.Qt.FindChildOption = Instance(Qt.FindChildrenRecursively))
+==================================================
+現状の課題
+==================================================
 
+bbox_review_tool.py に以下が混在しています。
+
+- GUI
+- 状態管理
+- ファイルI/O
+- フォルダスキャン
+- 検出結果パース
+- 教師データ出力
+- 集計処理
+- データモデル
+
+単一ファイルが肥大化しているため、
+責務ごとに分割したいです。
+
+==================================================
+リファクタリング方針
+==================================================
+
+機能変更禁止
+
+以下のみ実施してください。
+
+- ファイル分割
+- クラス分割
+- 責務整理
+- 型改善
+- Enum化
+- dataclass整理
+
+==================================================
+Phase1
+最優先
+==================================================
+
+以下を services へ分離
+
+scan_folder
+scan_folders
+parse_detection_file
+parse_detection_line
+
+↓
+
+services/scan_service.py
+
+例
+
+class FolderScanner:
+    scan()
+
+==================================================
+Phase2
+==================================================
+
+教師データ出力を分離
+
+現在
+
+export_dataset()
+build_summary()
+save_summary()
+
+を
+
+services/dataset_exporter.py
+
+へ移動
+
+例
+
+class DatasetExporter:
+    export()
+
+class ExportSummaryBuilder:
+    build()
+
+==================================================
+Phase3
+==================================================
+
+モデルを分離
+
+models/
+
+Detection
+ImageRecord
+ScanStats
+
+を移動
+
+==================================================
+Phase4
+==================================================
+
+定数整理
+
+以下を
+
+config/constants.py
+
+へ移動
+
+- CLASS_NAMES
+- REVIEW_MIN
+- REVIEW_MAX
+- FILTER_OPTIONS
+- STATUS_*
+- SOURCE_*
+- MAX_IMAGES
+
+==================================================
+Phase5
+==================================================
+
+Enum化
+
+現在
+
+STATUS_OK
+STATUS_NG
+STATUS_UNCONFIRMED
+
+↓
+
+class ReviewStatus(StrEnum)
+
+--------------------------------------------------
+
+現在
+
+SOURCE_AI
+SOURCE_MANUAL
+
+↓
+
+class DetectionSource(StrEnum)
+
+--------------------------------------------------
+
+現在
+
+0
+2
+
+↓
+
+class DetectionClass(IntEnum)
+
+PERSON = 0
+VEHICLE = 2
+
+==================================================
+Phase6
+==================================================
+
+AppStateの責務削減
+
+現在
+
+AppState が
+
+- 状態管理
+- 保存
+- CSV出力
+- 集計
+
+を持っている
+
+以下へ分離
+
+repositories/
+
+state_repository.py
+csv_repository.py
+
+==================================================
+Phase7
+==================================================
+
+UI分離
+
+現在
+
+MainWindow
+ImageCanvas
+ReviewPanel
+
+を個別ファイル化
+
+ui/
+
+main_window.py
+image_canvas.py
+review_panel.py
+
+==================================================
+完成後の構成
+==================================================
+
+bbox_review_tool/
+
+├─ app.py
+│
+├─ config/
+│  └─ constants.py
+│
+├─ models/
+│  ├─ detection.py
+│  ├─ image_record.py
+│  └─ scan_stats.py
+│
+├─ enums/
+│  ├─ review_status.py
+│  ├─ detection_source.py
+│  └─ detection_class.py
+│
+├─ services/
+│  ├─ scan_service.py
+│  ├─ dataset_exporter.py
+│  └─ summary_service.py
+│
+├─ repositories/
+│  ├─ state_repository.py
+│  └─ csv_repository.py
+│
+├─ state/
+│  └─ app_state.py
+│
+├─ ui/
+│  ├─ main_window.py
+│  ├─ image_canvas.py
+│  └─ review_panel.py
+│
+└─ app.py
+
+==================================================
+重要
+==================================================
+
+一度に全部変更しないでください。
+
+以下の順で実施してください。
+
+1.
+提案される最終構成を提示
+
+2.
+依存関係図を提示
+
+3.
+循環参照リスクを確認
+
+4.
+Phase1から順番に実施
+
+各Phaseごとに
+
+- 変更内容
+- Diff
+- 影響範囲
+- 動作確認方法
+
+を出力してください。
+
+==================================================
+追加改善
+==================================================
+
+可能であれば以下も提案してください。
+
+- Result型導入候補
+- Path操作改善候補
+- pandas依存削減候補
+- OpenCV依存境界整理
+- テスト追加ポイント
+- 将来的なMVC/MVP化案
+
+ただし過剰設計は禁止。
+
+PySide6デスクトップアプリとして
+最も保守しやすい構成を優先してください。
