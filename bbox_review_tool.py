@@ -5,8 +5,9 @@
 対象フォルダ（複数選択可）配下の *.jpg / *.txt（AI検出結果）を再帰的に読み込み、
 信頼値0.3〜0.5の境界検出のみを対象に目視レビューを行い、
 YOLO形式の教師データセット（train/val分割済み）を出力する。
-信頼値0.5以上の検出はそもそも読み込まない。BBoxの位置編集は行わない
-（操作はショートカットキーのみで完結する）。
+信頼値0.5以上の検出はレビュー対象外だが、教師データ出力時にはそのまま含める
+（除外すると物体領域が学習上「背景」扱いになり精度が下がるため）。
+BBoxの位置編集は行わない（操作はショートカットキーのみで完結する）。
 """
 
 from __future__ import annotations
@@ -47,7 +48,7 @@ from PySide6.QtWidgets import (
 CLASS_NAMES = {0: "Person", 2: "Vehicle"}
 
 REVIEW_MIN = 0.3
-REVIEW_MAX = 0.5  # この値以上の検出はそもそも読み込まない（仕様確定事項）
+REVIEW_MAX = 0.5  # この値以上の検出はレビュー対象外（教師データ出力には含める）
 
 MAX_IMAGES = 1000  # これを超える画像数のフォルダは読み込まずアラートを出す
 
@@ -137,6 +138,7 @@ class ImageRecord:
     txt_path: Optional[Path]
     has_txt: bool
     detections: list = field(default_factory=list)
+    high_conf_detections: list = field(default_factory=list)  # confidence>=REVIEW_MAX（レビュー対象外・出力時にそのまま含める）
 
     @property
     def name(self) -> str:
@@ -230,6 +232,7 @@ def scan_folder(root: Path, warnings: list):
         has_txt = txt_path.exists()
         rel_key = str(img_path.relative_to(root))
         detections = []
+        high_conf_detections = []
         has_review_target = False
         if has_txt:
             stats.total_txt += 1
@@ -237,7 +240,11 @@ def scan_folder(root: Path, warnings: list):
             bbox_id = 0
             for d in raw:
                 conf = d["confidence"]
-                if not (REVIEW_MIN <= conf < REVIEW_MAX):
+                if conf >= REVIEW_MAX:
+                    # レビュー対象外（既に高信頼度）。出力時にそのまま教師データへ含める。
+                    high_conf_detections.append({"class_id": d["class_id"], "bbox": d["bbox"]})
+                    continue
+                if conf < REVIEW_MIN:
                     continue
                 stats.total_detections += 1
                 if d["class_id"] == 0:
@@ -257,6 +264,7 @@ def scan_folder(root: Path, warnings: list):
             path=img_path, root=root, rel_key=rel_key,
             txt_path=txt_path if has_txt else None,
             has_txt=has_txt, detections=detections,
+            high_conf_detections=high_conf_detections,
         ))
     return records, stats
 
@@ -476,9 +484,15 @@ def export_dataset(state: AppState, out_dir: Path, warnings: list) -> dict:
             continue
         h, w = img.shape[:2]
 
+        # レビューでOKにしたBBoxに加え、0.5以上（レビュー対象外＝高信頼度）のBBoxも
+        # そのまま含める。レビュー対象外のBBoxをラベルから欠落させると、実際には
+        # 物体が写っている領域が学習上「背景」として扱われ、精度低下につながるため。
+        boxes_to_write = [(d.class_id, d.bbox) for d in included]
+        boxes_to_write += [(d["class_id"], d["bbox"]) for d in r.high_conf_detections]
+
         lines = []
-        for d in included:
-            xmin, ymin, xmax, ymax = d.bbox
+        for class_id, bbox in boxes_to_write:
+            xmin, ymin, xmax, ymax = bbox
             xmin_c, xmax_c = sorted((max(0.0, min(xmin, w)), max(0.0, min(xmax, w))))
             ymin_c, ymax_c = sorted((max(0.0, min(ymin, h)), max(0.0, min(ymax, h))))
             bw = xmax_c - xmin_c
@@ -487,7 +501,7 @@ def export_dataset(state: AppState, out_dir: Path, warnings: list) -> dict:
                 continue
             cx = (xmin_c + xmax_c) / 2.0 / w
             cy = (ymin_c + ymax_c) / 2.0 / h
-            lines.append(f"{d.class_id} {cx:.6f} {cy:.6f} {bw / w:.6f} {bh / h:.6f}")
+            lines.append(f"{class_id} {cx:.6f} {cy:.6f} {bw / w:.6f} {bh / h:.6f}")
 
         if not lines:
             continue
