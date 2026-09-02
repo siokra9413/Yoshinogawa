@@ -5,7 +5,7 @@ import traceback
 
 from PySide6.QtWidgets import QApplication, QMessageBox
 
-from bbox_review_tool.ui.main_window import MainWindow
+from src.ui.main_window import MainWindow
 
 
 def install_excepthook():

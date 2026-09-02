@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from bbox_review_tool.enums.detection_class import DetectionClass
+from src.enums.detection_class import DetectionClass
 
 CLASS_NAMES = {DetectionClass.PERSON: "Person", DetectionClass.VEHICLE: "Vehicle"}
 

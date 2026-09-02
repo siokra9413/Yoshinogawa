@@ -6,13 +6,13 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 
-from bbox_review_tool.config.constants import SUMMARY_CSV_FILENAME, SUMMARY_JSON_FILENAME
-from bbox_review_tool.enums.detection_class import DetectionClass
-from bbox_review_tool.enums.detection_source import DetectionSource
-from bbox_review_tool.enums.review_status import ReviewStatus
+from src.config.constants import SUMMARY_CSV_FILENAME, SUMMARY_JSON_FILENAME
+from src.enums.detection_class import DetectionClass
+from src.enums.detection_source import DetectionSource
+from src.enums.review_status import ReviewStatus
 
 if TYPE_CHECKING:
-    from bbox_review_tool.state.app_state import AppState
+    from src.state.app_state import AppState
 
 
 class ExportSummaryBuilder:

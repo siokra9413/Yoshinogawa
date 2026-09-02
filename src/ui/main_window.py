@@ -14,16 +14,16 @@ from PySide6.QtWidgets import (
     QStatusBar, QTreeView, QVBoxLayout, QWidget,
 )
 
-from bbox_review_tool.config.constants import FILTER_OPTIONS, MAX_IMAGES
-from bbox_review_tool.enums.review_status import ReviewStatus
-from bbox_review_tool.models.detection import Detection
-from bbox_review_tool.models.image_record import ImageRecord
-from bbox_review_tool.services.dataset_exporter import DatasetExporter
-from bbox_review_tool.services.scan_service import TooManyImagesError
-from bbox_review_tool.services.summary_service import ExportSummaryBuilder, save_summary
-from bbox_review_tool.state.app_state import AppState
-from bbox_review_tool.ui.image_canvas import ImageCanvas
-from bbox_review_tool.ui.review_panel import ReviewPanel
+from src.config.constants import FILTER_OPTIONS, MAX_IMAGES
+from src.enums.review_status import ReviewStatus
+from src.models.detection import Detection
+from src.models.image_record import ImageRecord
+from src.services.dataset_exporter import DatasetExporter
+from src.services.scan_service import TooManyImagesError
+from src.services.summary_service import ExportSummaryBuilder, save_summary
+from src.state.app_state import AppState
+from src.ui.image_canvas import ImageCanvas
+from src.ui.review_panel import ReviewPanel
 
 
 class FolderLoadWorker(QObject):

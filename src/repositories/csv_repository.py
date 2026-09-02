@@ -5,10 +5,10 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 
-from bbox_review_tool.config.constants import RESULT_CSV_FILENAME
+from src.config.constants import RESULT_CSV_FILENAME
 
 if TYPE_CHECKING:
-    from bbox_review_tool.state.app_state import AppState
+    from src.state.app_state import AppState
 
 
 class CsvRepository:

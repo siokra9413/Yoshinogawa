@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from bbox_review_tool.config.constants import REVIEW_MAX, REVIEW_MIN
-from bbox_review_tool.enums.detection_class import DetectionClass
-from bbox_review_tool.enums.detection_source import DetectionSource
-from bbox_review_tool.enums.review_status import ReviewStatus
-from bbox_review_tool.models.image_record import ImageRecord
-from bbox_review_tool.models.scan_stats import ScanStats
-from bbox_review_tool.repositories.csv_repository import CsvRepository
-from bbox_review_tool.repositories.state_repository import StateRepository
-from bbox_review_tool.services.scan_service import FolderScanner
+from src.config.constants import REVIEW_MAX, REVIEW_MIN
+from src.enums.detection_class import DetectionClass
+from src.enums.detection_source import DetectionSource
+from src.enums.review_status import ReviewStatus
+from src.models.image_record import ImageRecord
+from src.models.scan_stats import ScanStats
+from src.repositories.csv_repository import CsvRepository
+from src.repositories.state_repository import StateRepository
+from src.services.scan_service import FolderScanner
 
 
 class AppState:

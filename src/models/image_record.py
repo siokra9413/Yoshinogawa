@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from bbox_review_tool.models.detection import Detection
+from src.models.detection import Detection
 
 
 @dataclass

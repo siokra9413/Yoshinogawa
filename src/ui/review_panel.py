@@ -9,9 +9,9 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
 )
 
-from bbox_review_tool.config.constants import FILTER_OPTIONS
-from bbox_review_tool.enums.review_status import ReviewStatus
-from bbox_review_tool.models.detection import Detection
+from src.config.constants import FILTER_OPTIONS
+from src.enums.review_status import ReviewStatus
+from src.models.detection import Detection
 
 TOGGLE_ON_STYLE = "QPushButton:checked { background-color: #2e8b57; color: white; font-weight: bold; }"
 STATUS_BTN_STYLE = (

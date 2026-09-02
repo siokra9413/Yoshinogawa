@@ -10,9 +10,9 @@ from PySide6.QtWidgets import (
     QGraphicsItem, QGraphicsPixmapItem, QGraphicsRectItem, QGraphicsScene, QGraphicsView,
 )
 
-from bbox_review_tool.models.detection import Detection
-from bbox_review_tool.models.image_record import ImageRecord
-from bbox_review_tool.services.image_io import imread_unicode
+from src.models.detection import Detection
+from src.models.image_record import ImageRecord
+from src.services.image_io import imread_unicode
 
 SELECTED_COLOR = QColor(0, 255, 255)
 

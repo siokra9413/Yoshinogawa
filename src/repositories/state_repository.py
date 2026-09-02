@@ -4,11 +4,11 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from bbox_review_tool.config.constants import STATE_FILENAME
-from bbox_review_tool.models.detection import Detection
+from src.config.constants import STATE_FILENAME
+from src.models.detection import Detection
 
 if TYPE_CHECKING:
-    from bbox_review_tool.state.app_state import AppState
+    from src.state.app_state import AppState
 
 
 class StateRepository:

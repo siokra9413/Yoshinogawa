@@ -3,9 +3,9 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Optional
 
-from bbox_review_tool.config.constants import CLASS_NAMES
-from bbox_review_tool.enums.detection_source import DetectionSource
-from bbox_review_tool.enums.review_status import ReviewStatus
+from src.config.constants import CLASS_NAMES
+from src.enums.detection_source import DetectionSource
+from src.enums.review_status import ReviewStatus
 
 
 @dataclass

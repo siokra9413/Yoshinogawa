@@ -5,12 +5,12 @@ import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from bbox_review_tool.enums.review_status import ReviewStatus
-from bbox_review_tool.models.image_record import ImageRecord
-from bbox_review_tool.services.image_io import imread_unicode
+from src.enums.review_status import ReviewStatus
+from src.models.image_record import ImageRecord
+from src.services.image_io import imread_unicode
 
 if TYPE_CHECKING:
-    from bbox_review_tool.state.app_state import AppState
+    from src.state.app_state import AppState
 
 
 class DatasetExporter:

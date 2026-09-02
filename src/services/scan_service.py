@@ -3,13 +3,13 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from bbox_review_tool.config.constants import MAX_IMAGES, REVIEW_MAX, REVIEW_MIN
-from bbox_review_tool.enums.detection_class import DetectionClass
-from bbox_review_tool.enums.detection_source import DetectionSource
-from bbox_review_tool.enums.review_status import ReviewStatus
-from bbox_review_tool.models.detection import Detection
-from bbox_review_tool.models.image_record import ImageRecord
-from bbox_review_tool.models.scan_stats import ScanStats
+from src.config.constants import MAX_IMAGES, REVIEW_MAX, REVIEW_MIN
+from src.enums.detection_class import DetectionClass
+from src.enums.detection_source import DetectionSource
+from src.enums.review_status import ReviewStatus
+from src.models.detection import Detection
+from src.models.image_record import ImageRecord
+from src.models.scan_stats import ScanStats
 
 DETECTION_LINE_RE = re.compile(
     r"^\s*([-+\d.eE]+)\s+(\d+)\s+\[\s*([-+\d.eE]+)\s*,\s*([-+\d.eE]+)\s*,"
