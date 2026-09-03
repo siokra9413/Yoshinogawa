@@ -1,20 +1,168 @@
-Python 3.7互換にしてください。
+YOLO形式エクスポート機能を実装してください。
 
-現在以下のエラーが発生しています。
+# 出力ディレクトリ構成（フラット構成）
 
-ImportError: cannot import name 'StrEnum' from 'enum'
+<出力先>/
+├─ images/
+├─ labels/
+├─ dataset.yaml
+├─ review_summary.csv
+└─ review_summary.json
 
-要件:
+※ images/train や images/val などのサブフォルダは作成しないこと。
+※ labels/train や labels/val などのサブフォルダは作成しないこと。
+※ すべて images/ と labels/ の直下に配置すること。
 
-- Python 3.7対応
-- Python 3.11依存の機能を排除
-- StrEnumは以下へ置換
+# ファイル名
 
-from enum import Enum
+複数のルートフォルダを同時に開いている場合は、ファイル名衝突を防ぐため以下のプレフィックスを付与する。
 
-class Xxx(str, Enum):
-    ...
+{rootIndex:02d}_{rootName}_{originalFileName}
 
-- 動作は変更しない
+例:
 
-Python 3.7で起動できるよう修正してください。
+images/
+  00_siteA_IMG_0001.jpg
+  00_siteA_IMG_0002.jpg
+  01_siteB_IMG_0001.jpg
+
+labels/
+  00_siteA_IMG_0001.txt
+  00_siteA_IMG_0002.txt
+  01_siteB_IMG_0001.txt
+
+画像ファイルとラベルファイルは同名とする。
+
+# train/val 分割
+
+random.Random(42) の固定シードで画像単位に 80/20 分割すること。
+
+クラス層化は行わない。
+
+フラット構成を維持するため train, val フォルダは作成しない。
+
+dataset.yaml に train 用画像一覧と val 用画像一覧を記録すること。
+
+例:
+
+train:
+  - images/00_siteA_IMG_0001.jpg
+  - images/00_siteA_IMG_0002.jpg
+
+val:
+  - images/01_siteB_IMG_0001.jpg
+
+# ラベル形式
+
+1 detection = 1行。
+
+形式:
+
+class_id cx cy w h
+
+出力例:
+
+0 0.512345 0.623456 0.102345 0.204567
+2 0.345678 0.456789 0.123456 0.098765
+
+各値は YOLO 形式。
+
+cx,cy,w,h は画像サイズで正規化し、0〜1範囲とする。
+
+小数点以下6桁固定で出力する。
+
+# 座標変換
+
+入力:
+
+xmin
+ymin
+xmax
+ymax
+
+変換:
+
+cx = ((xmin + xmax) / 2) / image_width
+cy = ((ymin + ymax) / 2) / image_height
+w  = (xmax - xmin) / image_width
+h  = (ymax - ymin) / image_height
+
+小数点以下6桁で保存する。
+
+# 採用条件
+
+エクスポート対象:
+
+- ReviewStatus.OK
+- high_conf_detections のうち confidence >= 0.5
+
+上記以外は除外する。
+
+# 空画像
+
+対象画像に有効な bbox が1件も残らない場合、
+
+- 画像を出力しない
+- ラベルを出力しない
+
+# クラスID
+
+DetectionClass IntEnum を使用する。
+
+0 = Person
+2 = Vehicle
+
+1 は予約扱いとし使用しない。
+
+dataset.yaml の names も以下で固定する。
+
+names:
+  0: Person
+  2: Vehicle
+
+# dataset.yaml
+
+出力例:
+
+path: .
+
+train:
+  - images/00_siteA_IMG_0001.jpg
+
+val:
+  - images/01_siteB_IMG_0001.jpg
+
+names:
+  0: Person
+  2: Vehicle
+
+# サマリー出力
+
+review_summary.csv
+review_summary.json
+
+を出力すること。
+
+日本語キーを使用する。
+
+例:
+
+総画像数
+出力画像数
+総検出数
+採用検出数
+Person件数
+Vehicle件数
+train画像数
+val画像数
+
+# 実装方針
+
+- Ultralytics YOLO形式
+- フラットディレクトリ構成
+- train/valフォルダは作らない
+- dataset.yamlで分割を管理
+- ファイル名衝突回避プレフィックスを付与
+- bboxはYOLO形式へ変換
+- 数値は小数点以下6桁固定
+- random.Random(42)で再現可能な分割
